@@ -1,0 +1,79 @@
+# Сравнительное тестирование трёх ИИ-версий в одном запуске
+name: Comparative Test Report
+
+on:
+  workflow_dispatch:          # запуск только вручную
+
+jobs:
+  test:
+    name: Test AI Version ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false        # не останавливать остальные версии, если одна упала
+      matrix:
+        version: [1, 2, 3]    # три параллельные задачи (Jobs)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ai-version-${{ matrix.version }}   # явно берём нужную ветку
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - run: dotnet restore
+      - run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        run: >
+          dotnet test --no-build --configuration Release
+          --verbosity normal
+          --logger "trx;LogFileName=ai-v${{ matrix.version }}.trx"
+          --results-directory TestResults
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-ai-v${{ matrix.version }}
+          path: TestResults/*.trx
+
+  report:
+    name: Unified Report
+    needs: test               # ждём все три задачи
+    if: always()              # строим отчёт, даже если какие-то тесты упали
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: results
+
+      - name: Build summary table
+        shell: python
+        run: |
+          import glob, os, xml.etree.ElementTree as ET
+          ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+          lines = ["## Сравнение ИИ-версий модуля Calculator", "",
+                   "| Версия | Всего | Passed | Failed | Статус |",
+                   "|---|---|---|---|---|"]
+          details = []
+          for v in (1, 2, 3):
+              files = glob.glob(f"results/results-ai-v{v}/*.trx")
+              if not files:
+                  lines.append(f"| AI-v{v} | – | – | – | ❌ сборка/запуск не удались |")
+                  continue
+              root = ET.parse(files[0]).getroot()
+              c = root.find(".//t:Counters", ns).attrib
+              total, passed, failed = c["total"], c["passed"], c["failed"]
+              status = "✅" if failed == "0" else "❌"
+              lines.append(f"| AI-v{v} | {total} | {passed} | {failed} | {status} |")
+              for r in root.findall(".//t:UnitTestResult", ns):
+                  if r.get("outcome") == "Failed":
+                      msg = r.find(".//t:Message", ns)
+                      text = (msg.text or "").strip().replace("\n", " ") if msg is not None else ""
+                      details.append(f"- **AI-v{v}** `{r.get('testName')}`: {text[:200]}")
+          if details:
+              lines += ["", "### Упавшие тесты", ""] + details
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
