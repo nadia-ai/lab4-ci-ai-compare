@@ -1,0 +1,42 @@
+# Базовый CI-пайплайн: сборка и прогон NUnit-тестов
+name: .NET CI Pipeline (NUnit)
+
+on:
+  push:                       # автоматический запуск при push в эти ветки
+    branches: [ "main", "ai-version-1", "ai-version-2", "ai-version-3" ]
+  pull_request:               # проверка pull request в main
+    branches: [ "main" ]
+  workflow_dispatch:          # ручной запуск кнопкой Run workflow
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest    # чистая виртуальная машина GitHub
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4          # скачать код выбранной ветки
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4      # установить .NET SDK
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore                # скачать NuGet-пакеты (NUnit и др.)
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        run: >
+          dotnet test --no-build --configuration Release
+          --verbosity normal
+          --logger "console;verbosity=detailed"
+          --logger "trx;LogFileName=results.trx"
+          --results-directory TestResults
+
+      - name: Publish Test Results
+        uses: actions/upload-artifact@v4   # сохранить .trx-отчёт как артефакт
+        if: always()                       # даже если тесты упали
+        with:
+          name: nunit-test-results-${{ github.ref_name }}
+          path: TestResults/*.trx
